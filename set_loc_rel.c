@@ -1,5 +1,16 @@
+// This method rapidly moves the mouse towards the top left corner
+// in an extremely negative direction to guarentee that it is at
+// (0,0). Then the touchpad MUST be disabled (there should be a
+// button on the keyboard to do this) in order to guarantee that
+// the position is known at all times. Otherwise, we will have to
+// move it to (0,0) each loop in order to guarantee position.
+//
+// This seems to work EXTREMELY well unless we need to use 
+// mouse buttons.
+
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,67 +41,6 @@
 #define MAX_ABS_X 3192
 #define MAX_ABS_Y 1824
 
-static void fatal(const char *msg) {
-    fprintf(stderr, "fatal: ");
-
-    if (errno)
-        perror(msg);
-    else
-        fprintf(stderr, "%s\n", msg);
-
-    exit(EXIT_FAILURE);
-}
-
-static void setup_abs(int fd, int type, int min, int max, int res) {
-    struct uinput_abs_setup abs = {
-        .code = type,
-        .absinfo = {
-            .minimum = min,
-            .maximum = max,
-            .resolution = res
-        }
-    };
-
-    if (-1 == ioctl(fd, UI_ABS_SETUP, &abs))
-        fatal("ioctl UI_ABS_SETUP");
-}
-
-static void init(int fd, int width, int height, int dpi) {
-    if (-1 == ioctl(fd, UI_SET_EVBIT, EV_SYN))
-        fatal("ioctl UI_SET_EVBIT EV_SYN");
-
-    if (-1 == ioctl(fd, UI_SET_EVBIT, EV_KEY))
-        fatal("ioctl UI_SET_EVBIT EV_KEY");
-    if (-1 == ioctl(fd, UI_SET_KEYBIT, BTN_LEFT))
-        fatal("ioctl UI_SET_KEYBIT BTN_LEFT");
-
-    if (-1 == ioctl(fd, UI_SET_EVBIT, EV_ABS))
-        fatal("ioctl UI_SET_EVBIT EV_ABS");
-    /* the ioctl UI_ABS_SETUP enables these automatically, when appropriate:
-        ioctl(fd, UI_SET_ABSBIT, ABS_X);
-        ioctl(fd, UI_SET_ABSBIT, ABS_Y);
-    */
-
-    struct uinput_setup device = {
-        .id = {
-            .bustype = BUS_USB
-        },
-        .name = "Emulated Absolute Positioning Device"
-    };
-
-    if (-1 == ioctl(fd, UI_DEV_SETUP, &device))
-        fatal("ioctl UI_DEV_SETUP");
-
-    setup_abs(fd, ABS_X, 0, width, dpi);
-    setup_abs(fd, ABS_Y, 0, height, dpi);
-
-    if (-1 == ioctl(fd, UI_DEV_CREATE))
-        fatal("ioctl UI_DEV_CREATE");
-
-    /* give time for device creation */
-    sleep(1);
-}
-
 static void emit(int fd, int type, int code, int value) {
     struct input_event ie = {
         .type = type,
@@ -98,27 +48,38 @@ static void emit(int fd, int type, int code, int value) {
         .value = value
     };
 
-    write(fd, &ie, sizeof ie);
+    write(fd, &ie, sizeof(ie));
 }
 
-int main() {
-    /* These values are very device specific */
-    int width = RES_WIDTH;
-    int height = RES_HEIGHT;
-    int dpi = 96;
-
-    if (width < 1 || height < 1 || dpi < 1)
-        fatal("Bad initial value(s).");
+int main(void) {
+    struct uinput_setup device = {
+        .id = {
+            .bustype = BUS_USB,
+        },
+        .name = "Emulated \"Absolute\" Positioning Device"
+    };
 
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
 
-    if (-1 == fd)
-        fatal("open");
+    if (fd == -1) {
+      perror("Cannot read from file. Most likely need to run as root.\n");
+      exit(EXIT_FAILURE);
+    }
 
-    printf("Initializing device screen map as %dx%d\n",
-        width, height);
+    // enable mouse button left and relative events
+    ioctl(fd, UI_SET_EVBIT, EV_KEY);
+    ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
 
-    init(fd, width, height, dpi);
+    ioctl(fd, UI_SET_EVBIT, EV_REL);
+    ioctl(fd, UI_SET_RELBIT, REL_X);
+    ioctl(fd, UI_SET_RELBIT, REL_Y);
+
+    // device creation
+    ioctl(fd, UI_DEV_SETUP, &device);
+    ioctl(fd, UI_DEV_CREATE);
+
+    /* give time for device creation */
+    sleep(1);
 
     // /dev/input/eventX writes data in blocks of 24 bytes
     unsigned char buffer[24];
@@ -126,11 +87,25 @@ int main() {
 
     ptr = fopen("/dev/input/" TOUCHPAD_EVENT_X, "rb");
 
-    if (ptr == NULL)
+    if (ptr == NULL) {
       exit(EXIT_FAILURE);
+      perror("Couldn't open file. Need to be in \"input\""
+          "user group most likely.\n");
+    }
 
     int raw_x = 0;
     int raw_y = 0;
+
+    int cur_pos_x = 0;
+    int cur_pos_y = 0;
+
+    // Move to 0,0 in order to reset
+    emit(fd, EV_REL, REL_X, INT_MIN);
+    emit(fd, EV_REL, REL_Y, INT_MIN);
+    emit(fd, EV_SYN, SYN_REPORT, 0);
+    usleep(500);
+
+    // Code works up to this point
 
     while (1) {
         fread(buffer, sizeof(buffer), 1, ptr);
@@ -169,10 +144,16 @@ int main() {
 
         printf("(%d,%d)\n", pos_x, pos_y);
 
-        /* input is zero-based, but event positions are one-based */
-        emit(fd, EV_ABS, ABS_X, 1 + pos_x);
-        emit(fd, EV_ABS, ABS_Y, 1 + pos_y);
+        int rel_pos_x = pos_x - cur_pos_x;
+        int rel_pos_y = pos_y - cur_pos_y;
+
+        emit(fd, EV_REL, REL_X, rel_pos_x);
+        emit(fd, EV_REL, REL_Y, rel_pos_y);
         emit(fd, EV_SYN, SYN_REPORT, 0);
+
+        // After movement this is true
+        cur_pos_x = pos_x;
+        cur_pos_y = pos_y;
     }
 
     puts("Cleaning up...");
@@ -180,8 +161,7 @@ int main() {
     /* give time for events to finish */
     sleep(1);
 
-    if (-1 == ioctl(fd, UI_DEV_DESTROY))
-        fatal("ioctl UI_DEV_DESTROY");
+    ioctl(fd, UI_DEV_DESTROY);
 
     close(fd);
     puts("Goodbye.");
