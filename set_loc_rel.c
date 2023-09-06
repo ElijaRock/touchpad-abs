@@ -19,9 +19,6 @@
 #include <linux/uinput.h>
 #include <sys/ioctl.h>
 
-// These values should not be changed by the user
-#define CODE_ID_BYTE 18
-
 // The below values are device specific and should be changed by the user
 
 // Running `evtest` as root user with no arguments
@@ -110,7 +107,16 @@ int main(void) {
     while (1) {
         fread(buffer, sizeof(buffer), 1, ptr);
 
-        int code = buffer[CODE_ID_BYTE];
+        // Add code bytes to calculate code
+        int code_len = 0;
+        char code_bin[17]; // Why is this 17 and not 16?
+
+        for (int i = 19; i >= 18; i--) {
+          code_len += snprintf(code_bin + code_len,
+              sizeof(code_bin) - code_len, "%8.8b", buffer[i]);
+        }
+
+        int code = (int) strtol(code_bin, NULL, 2);
 
         if (code == ABS_MT_POSITION_X) {
           int len = 0;
@@ -118,7 +124,7 @@ int main(void) {
           // Size of the value for ABS_MT_POSITION_X is 4 bytes long
           // a string of binary this size with leading zeros in
           // little endian is 33 (that's the reason for loop backwards)
-          char binary_string[33];
+          char binary_string[33]; // Why is this 33 and not 32?
 
           for (int i = 23; i >= 20; i--) {
             len += snprintf(binary_string + len,
@@ -137,6 +143,21 @@ int main(void) {
           }
 
           raw_y = (int) strtol(binary_string, NULL, 2);
+
+        } else if (code == BTN_LEFT) {
+          int len = 0;
+          char binary_string[33];
+
+          for (int i = 23; i >=20; i--) {
+            len += snprintf(binary_string + len,
+                sizeof(binary_string) - len, "%8.8b", buffer[i]);
+
+            int raw_click = (int) strtol(binary_string, NULL, 2);
+
+            // If raw_click is 0 it will be depress if its 1
+            // it will be press down
+            emit(fd, EV_KEY, BTN_LEFT, raw_click);
+          }
         }
 
         int pos_x = raw_x * RES_WIDTH / MAX_ABS_X;
