@@ -105,6 +105,10 @@ int main(void) {
     int raw_x = 0;
     int raw_y = 0;
 
+    // Speed improvemnts by not settings position if already there
+    int prev_raw_x = 0;
+    int prev_raw_y = 0;
+
     int cur_pos_x = 0;
     int cur_pos_y = 0;
 
@@ -145,6 +149,11 @@ int main(void) {
 
           raw_x = (int) strtol(binary_string, NULL, 2);
 
+          // Skip calculations and setting position
+          // Saves time and resources
+          if (raw_x == prev_raw_x)
+            continue;
+
         } else if (code == ABS_MT_POSITION_Y) {
           int len = 0;
           char binary_string[33];
@@ -155,6 +164,11 @@ int main(void) {
           }
 
           raw_y = (int) strtol(binary_string, NULL, 2);
+
+          // Then skip this 24 bytes
+          if (raw_y == prev_raw_y)
+             continue;
+
          } else if (code == BTN_LEFT) {
           int len = 0;
           char binary_string[33];
@@ -169,7 +183,11 @@ int main(void) {
             // it will be press down
             emit(fd, EV_KEY, BTN_LEFT, raw_click);
           }
+        } else {
+          // No reason to do more calculations.
+          continue;
         }
+
 
         double scale_factor_x = ((double) MAX_ABS_X) / TOUCHPAD_WIDTH_MM;
         double scale_factor_y = ((double) MAX_ABS_Y) / TOUCHPAD_HEIGHT_MM;
@@ -211,6 +229,9 @@ int main(void) {
         // After movement this is true
         cur_pos_x = pos_x;
         cur_pos_y = pos_y;
+
+        prev_raw_x = raw_x;
+        prev_raw_y = raw_y;
     }
 
     puts("Cleaning up...");
