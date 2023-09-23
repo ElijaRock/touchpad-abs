@@ -21,13 +21,8 @@
 
 // The below values are device specific and should be changed by the user
 
-// Running `evtest` as root user with no arguments
-// will list the available devices. Find the "touchpad"
-// one and store its number in the below constant
-#define TOUCHPAD_EVENT_X "event5"
-
 #define RES_WIDTH 1920
-#define RES_HEIGHT 1080
+#define RES_HEIGHT 1200
 
 // This is where the user needs to run `evtest` as root
 // and move their finger to the bottom right corner
@@ -35,14 +30,14 @@
 // Ie: `sudo evtest /dev/input/eventX |& grep ABS`
 // where "eventX" is replaced by the event number of
 // your touchpad. Eg: "event5"
-#define MAX_ABS_X 3192
-#define MAX_ABS_Y 1824
+#define MAX_ABS_X 3528
+#define MAX_ABS_Y 1793
 
 // The final values to configure is the measurements
 // for you touchpad dimensions. Use a ruler or tape
 // to find the length and width IN MILLIMETERS
-#define TOUCHPAD_WIDTH_MM 105
-#define TOUCHPAD_HEIGHT_MM 61
+#define TOUCHPAD_WIDTH_MM 115
+#define TOUCHPAD_HEIGHT_MM 60
 
 // The final final values to configure are the
 // measurements for the area you want to use/work in
@@ -61,6 +56,34 @@ static void emit(int fd, int type, int code, int value) {
 }
 
 int main(void) {
+    // Get event* number for trackpad
+    FILE *cmd;
+    char result[1024];
+
+    cmd = popen("cat /proc/bus/input/devices |"
+        "grep -i touchpad -A 4 | grep -oP '(?<=event).*'", "r");
+    if (cmd == NULL) {
+        perror("popen");
+        exit(EXIT_FAILURE);
+    }
+
+    fseek(cmd, 0, SEEK_END);
+    int length = ftell(cmd);
+    fseek(cmd, 0, SEEK_SET);
+
+    char *touchpad_event_x = malloc(sizeof(touchpad_event_x) * (length + 1));
+
+    char c;
+    int i = 0;
+    while ( (c = fgetc(cmd)) != EOF ) {
+        touchpad_event_x[i] = c;
+        i++;
+    }
+    touchpad_event_x[i] = '\0';
+
+    pclose(cmd);
+
+    // Setup emulated device struct
     struct uinput_setup device = {
         .id = {
             .bustype = BUS_USB,
@@ -94,13 +117,21 @@ int main(void) {
     unsigned char buffer[24];
     FILE *ptr;
 
-    ptr = fopen("/dev/input/" TOUCHPAD_EVENT_X, "rb");
+    char filename[50] = "/dev/input/event";
+    strncat(filename, touchpad_event_x, strnlen(touchpad_event_x, 2) - 1);
+
+    // Open eventX file
+    ptr = fopen(filename, "rb");
 
     if (ptr == NULL) {
       exit(EXIT_FAILURE);
       perror("Couldn't open file. Need to be in \"input\""
           "user group most likely.\n");
     }
+
+    // Disable touchpad to only use this program
+    // system("gsettings set org.gnome.desktop.peripherals.touchpad "
+    //    "send-events 'disabled'");
 
     int raw_x = 0;
     int raw_y = 0;
@@ -236,10 +267,17 @@ int main(void) {
 
     puts("Cleaning up...");
 
+    free(touchpad_event_x);
+
     /* give time for events to finish */
     sleep(1);
 
     ioctl(fd, UI_DEV_DESTROY);
+
+    // Re-enable usual touchpad driver
+    // system("gsettings set org.gnome.desktop.peripherals.touchpad "
+    //    "send-events 'enabled'");
+
 
     close(fd);
     puts("Goodbye.");
