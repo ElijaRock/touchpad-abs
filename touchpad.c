@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/input.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,14 +37,14 @@
 // The final values to configure is the measurements
 // for you touchpad dimensions. Use a ruler or tape
 // to find the length and width IN MILLIMETERS
-#define TOUCHPAD_WIDTH_MM 115
-#define TOUCHPAD_HEIGHT_MM 60
+#define TOUCHPAD_WIDTH_MM 114
+#define TOUCHPAD_HEIGHT_MM 58
 
 // The final final values to configure are the
 // measurements for the area you want to use/work in
 // eg: I want to use 75mmx55mm like on tablet so
-#define ADJUSTED_WIDTH_MM 75
-#define ADJUSTED_HEIGHT_MM 55
+#define ADJUSTED_WIDTH_MM 114
+#define ADJUSTED_HEIGHT_MM 58
 
 static void emit(int fd, int type, int code, int value) {
     struct input_event ie = {
@@ -129,7 +130,11 @@ int main(void) {
           "user group most likely.\n");
     }
 
-    // Disable touchpad to only use this program
+    int touchpad_fd = open(touchpad_event_x, O_RDONLY | O_NONBLOCK);
+    // Disable touchpad to only use this program aka GRAB IT
+    ioctl(touchpad_fd, EVIOCGRAB, 1);
+
+
     // system("gsettings set org.gnome.desktop.peripherals.touchpad "
     //    "send-events 'disabled'");
 
@@ -142,6 +147,8 @@ int main(void) {
 
     int cur_pos_x = 0;
     int cur_pos_y = 0;
+
+    // GRAB
 
     // Move to 0,0 in order to reset
     emit(fd, EV_REL, REL_X, INT_MIN);
@@ -271,6 +278,9 @@ int main(void) {
 
     /* give time for events to finish */
     sleep(1);
+
+    ioctl(touchpad_fd, EVIOCREVOKE, 1);
+    close(touchpad_fd);
 
     ioctl(fd, UI_DEV_DESTROY);
 
