@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O0 -Wall -std=c17 -pedantic -g
+CFLAGS=-O0 -Wall -pedantic -g
 
 all: touchpad
 
