@@ -5,7 +5,7 @@
 // the position is known at all times. Otherwise, we will have to
 // move it to (0,0) each loop in order to guarantee position.
 //
-// This seems to work EXTREMELY well unless we need to use 
+// This seems to work EXTREMELY well unless we need to use
 // mouse buttons.
 
 #include <errno.h>
@@ -47,248 +47,243 @@
 #define ADJUSTED_HEIGHT_MM 58
 
 static void emit(int fd, int type, int code, int value) {
-    struct input_event ie = {
-        .type = type,
-        .code = code,
-        .value = value
-    };
+  struct input_event ie = {.type = type, .code = code, .value = value};
 
-    write(fd, &ie, sizeof(ie));
+  write(fd, &ie, sizeof(ie));
 }
 
 int main(void) {
-    // Get event* number for trackpad
-    FILE *cmd;
-    char result[1024];
+  // Get event* number for trackpad
+  FILE *cmd;
+  char result[1024];
 
-    cmd = popen("cat /proc/bus/input/devices |"
-        "grep -i touchpad -A 4 | grep -oP '(?<=event).*'", "r");
-    if (cmd == NULL) {
-        perror("popen");
-        exit(EXIT_FAILURE);
+  cmd = popen("cat /proc/bus/input/devices |"
+              "grep -i touchpad -A 4 | grep -oP '(?<=event)[0-9]*'",
+              "r");
+  if (cmd == NULL) {
+    perror("popen");
+    exit(EXIT_FAILURE);
+  }
+
+  fseek(cmd, 0, SEEK_END);
+  int length = ftell(cmd);
+  fseek(cmd, 0, SEEK_SET);
+
+  char *touchpad_event_x = malloc(sizeof(touchpad_event_x) * (length + 1));
+
+  char c;
+  int i = 0;
+  while ((c = fgetc(cmd)) != '\n') {
+    touchpad_event_x[i] = c;
+    i++;
+  }
+  touchpad_event_x[i] = '\0';
+
+  pclose(cmd);
+
+  // Setup emulated device struct
+  // Why is clang-format freaking out??
+  struct uinput_setup device = {.id =
+                                    {
+                                        .bustype = BUS_USB,
+                                    },
+                                .name =
+                                    "Emulated \"Absolute\" Positioning Device"};
+
+  int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+
+  if (fd == -1) {
+    perror("Cannot read from file. Most likely need to run as root.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  // enable mouse button left and relative events
+  ioctl(fd, UI_SET_EVBIT, EV_KEY);
+  ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
+
+  ioctl(fd, UI_SET_EVBIT, EV_REL);
+  ioctl(fd, UI_SET_RELBIT, REL_X);
+  ioctl(fd, UI_SET_RELBIT, REL_Y);
+
+  // device creation
+  ioctl(fd, UI_DEV_SETUP, &device);
+  ioctl(fd, UI_DEV_CREATE);
+
+  /* give time for device creation */
+  sleep(1);
+
+  // /dev/input/eventX writes data in blocks of 24 bytes
+  unsigned char buffer[24];
+  FILE *ptr;
+
+  char filename[50] = "/dev/input/event";
+  strncat(filename, touchpad_event_x, strnlen(touchpad_event_x, 2) - 1);
+
+  // Open eventX file
+  ptr = fopen(filename, "rb");
+
+  if (ptr == NULL) {
+    exit(EXIT_FAILURE);
+    perror("Couldn't open file. Need to be in \"input\""
+           "user group most likely.\n");
+  }
+
+  int touchpad_fd = open(touchpad_event_x, O_RDONLY | O_NONBLOCK);
+  // Disable touchpad to only use this program aka GRAB IT
+  ioctl(touchpad_fd, EVIOCGRAB, 1);
+
+  // system("gsettings set org.gnome.desktop.peripherals.touchpad "
+  //    "send-events 'disabled'");
+
+  int raw_x = 0;
+  int raw_y = 0;
+
+  // Speed improvemnts by not settings position if already there
+  int prev_raw_x = 0;
+  int prev_raw_y = 0;
+
+  int cur_pos_x = 0;
+  int cur_pos_y = 0;
+
+  // GRAB
+
+  // Move to 0,0 in order to reset
+  emit(fd, EV_REL, REL_X, INT_MIN);
+  emit(fd, EV_REL, REL_Y, INT_MIN);
+  emit(fd, EV_SYN, SYN_REPORT, 0);
+  usleep(500);
+
+  // Code works up to this point
+
+  while (1) {
+    fread(buffer, sizeof(buffer), 1, ptr);
+
+    // Add code bytes to calculate code
+    int code_len = 0;
+    char code_bin[17]; // Why is this 17 and not 16?
+
+    for (int i = 19; i >= 18; i--) {
+      code_len += snprintf(code_bin + code_len, sizeof(code_bin) - code_len,
+                           "%8.8b", buffer[i]);
     }
 
-    fseek(cmd, 0, SEEK_END);
-    int length = ftell(cmd);
-    fseek(cmd, 0, SEEK_SET);
+    int code = (int)strtol(code_bin, NULL, 2);
 
-    char *touchpad_event_x = malloc(sizeof(touchpad_event_x) * (length + 1));
+    if (code == ABS_MT_POSITION_X) {
+      int len = 0;
 
-    char c;
-    int i = 0;
-    while ( (c = fgetc(cmd)) != EOF ) {
-        touchpad_event_x[i] = c;
-        i++;
-    }
-    touchpad_event_x[i] = '\0';
+      // Size of the value for ABS_MT_POSITION_X is 4 bytes long
+      // a string of binary this size with leading zeros in
+      // little endian is 33 (that's the reason for loop backwards)
+      char binary_string[33];
 
-    pclose(cmd);
+      for (int i = 23; i >= 20; i--) {
+        len += snprintf(binary_string + len, sizeof(binary_string) - len,
+                        "%8.8b", buffer[i]);
+      }
 
-    // Setup emulated device struct
-    struct uinput_setup device = {
-        .id = {
-            .bustype = BUS_USB,
-        },
-        .name = "Emulated \"Absolute\" Positioning Device"
-    };
+      raw_x = (int)strtol(binary_string, NULL, 2);
 
-    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+      // Skip calculations and setting position
+      // Saves time and resources
+      if (raw_x == prev_raw_x)
+        continue;
 
-    if (fd == -1) {
-      perror("Cannot read from file. Most likely need to run as root.\n");
-      exit(EXIT_FAILURE);
-    }
+    } else if (code == ABS_MT_POSITION_Y) {
+      int len = 0;
+      char binary_string[33];
 
-    // enable mouse button left and relative events
-    ioctl(fd, UI_SET_EVBIT, EV_KEY);
-    ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
+      for (int i = 23; i >= 20; i--) {
+        len += snprintf(binary_string + len, sizeof(binary_string) - len,
+                        "%8.8b", buffer[i]);
+      }
 
-    ioctl(fd, UI_SET_EVBIT, EV_REL);
-    ioctl(fd, UI_SET_RELBIT, REL_X);
-    ioctl(fd, UI_SET_RELBIT, REL_Y);
+      raw_y = (int)strtol(binary_string, NULL, 2);
 
-    // device creation
-    ioctl(fd, UI_DEV_SETUP, &device);
-    ioctl(fd, UI_DEV_CREATE);
+      // Then skip this 24 bytes
+      if (raw_y == prev_raw_y)
+        continue;
 
-    /* give time for device creation */
-    sleep(1);
+    } else if (code == BTN_LEFT) {
+      int len = 0;
+      char binary_string[33];
 
-    // /dev/input/eventX writes data in blocks of 24 bytes
-    unsigned char buffer[24];
-    FILE *ptr;
+      for (int i = 23; i >= 20; i--) {
+        len += snprintf(binary_string + len, sizeof(binary_string) - len,
+                        "%8.8b", buffer[i]);
 
-    char filename[50] = "/dev/input/event";
-    strncat(filename, touchpad_event_x, strnlen(touchpad_event_x, 2) - 1);
+        int raw_click = (int)strtol(binary_string, NULL, 2);
 
-    // Open eventX file
-    ptr = fopen(filename, "rb");
-
-    if (ptr == NULL) {
-      exit(EXIT_FAILURE);
-      perror("Couldn't open file. Need to be in \"input\""
-          "user group most likely.\n");
+        // If raw_click is 0 it will be depress if its 1
+        // it will be press down
+        emit(fd, EV_KEY, BTN_LEFT, raw_click);
+      }
+    } else {
+      // No reason to do more calculations.
+      continue;
     }
 
-    int touchpad_fd = open(touchpad_event_x, O_RDONLY | O_NONBLOCK);
-    // Disable touchpad to only use this program aka GRAB IT
-    ioctl(touchpad_fd, EVIOCGRAB, 1);
+    double scale_factor_x = ((double)MAX_ABS_X) / TOUCHPAD_WIDTH_MM;
+    double scale_factor_y = ((double)MAX_ABS_Y) / TOUCHPAD_HEIGHT_MM;
 
+    int scaled_width = (int)(scale_factor_x * ADJUSTED_WIDTH_MM);
+    int scaled_height = (int)(scale_factor_y * ADJUSTED_HEIGHT_MM);
 
-    // system("gsettings set org.gnome.desktop.peripherals.touchpad "
-    //    "send-events 'disabled'");
+    int uncentered_pos_x = raw_x * RES_WIDTH / scaled_width;
+    int uncentered_pos_y = raw_y * RES_HEIGHT / scaled_height;
 
-    int raw_x = 0;
-    int raw_y = 0;
+    int leftover_width = MAX_ABS_X - scaled_width;
+    int leftover_height = MAX_ABS_Y - scaled_height;
 
-    // Speed improvemnts by not settings position if already there
-    int prev_raw_x = 0;
-    int prev_raw_y = 0;
+    // this works to center area
+    int pos_x = uncentered_pos_x - leftover_width / 2;
+    int pos_y = uncentered_pos_y - leftover_height / 2;
 
-    int cur_pos_x = 0;
-    int cur_pos_y = 0;
+    printf("(%d,%d)\n", pos_x, pos_y);
 
-    // GRAB
+    int rel_pos_x = pos_x - cur_pos_x;
+    int rel_pos_y = pos_y - cur_pos_y;
 
-    // Move to 0,0 in order to reset
-    emit(fd, EV_REL, REL_X, INT_MIN);
-    emit(fd, EV_REL, REL_Y, INT_MIN);
+    emit(fd, EV_REL, REL_X, rel_pos_x);
+    emit(fd, EV_REL, REL_Y, rel_pos_y);
     emit(fd, EV_SYN, SYN_REPORT, 0);
-    usleep(500);
 
-    // Code works up to this point
+    // Disallow going over boundaries of the screen
+    // for current position calculation so we can get
+    // true pos.
+    if (pos_x < 0)
+      pos_x = 0;
+    if (pos_x > RES_WIDTH)
+      pos_x = RES_WIDTH;
+    if (pos_y < 0)
+      pos_y = 0;
+    if (pos_y > RES_HEIGHT)
+      pos_y = RES_HEIGHT;
 
-    while (1) {
-        fread(buffer, sizeof(buffer), 1, ptr);
+    // After movement this is true
+    cur_pos_x = pos_x;
+    cur_pos_y = pos_y;
 
-        // Add code bytes to calculate code
-        int code_len = 0;
-        char code_bin[17]; // Why is this 17 and not 16?
+    prev_raw_x = raw_x;
+    prev_raw_y = raw_y;
+  }
 
-        for (int i = 19; i >= 18; i--) {
-          code_len += snprintf(code_bin + code_len,
-              sizeof(code_bin) - code_len, "%8.8b", buffer[i]);
-        }
+  puts("Cleaning up...");
 
-        int code = (int) strtol(code_bin, NULL, 2);
+  free(touchpad_event_x);
 
-        if (code == ABS_MT_POSITION_X) {
-          int len = 0;
+  /* give time for events to finish */
+  sleep(1);
 
-          // Size of the value for ABS_MT_POSITION_X is 4 bytes long
-          // a string of binary this size with leading zeros in
-          // little endian is 33 (that's the reason for loop backwards)
-          char binary_string[33];
+  ioctl(touchpad_fd, EVIOCREVOKE, 1);
+  close(touchpad_fd);
 
-          for (int i = 23; i >= 20; i--) {
-            len += snprintf(binary_string + len,
-                sizeof(binary_string) - len, "%8.8b", buffer[i]);
-          }
+  ioctl(fd, UI_DEV_DESTROY);
 
-          raw_x = (int) strtol(binary_string, NULL, 2);
+  // Re-enable usual touchpad driver
+  // system("gsettings set org.gnome.desktop.peripherals.touchpad "
+  //    "send-events 'enabled'");
 
-          // Skip calculations and setting position
-          // Saves time and resources
-          if (raw_x == prev_raw_x)
-            continue;
-
-        } else if (code == ABS_MT_POSITION_Y) {
-          int len = 0;
-          char binary_string[33];
-
-          for (int i = 23; i >= 20; i--) {
-            len += snprintf(binary_string + len,
-                sizeof(binary_string) - len, "%8.8b", buffer[i]);
-          }
-
-          raw_y = (int) strtol(binary_string, NULL, 2);
-
-          // Then skip this 24 bytes
-          if (raw_y == prev_raw_y)
-             continue;
-
-         } else if (code == BTN_LEFT) {
-          int len = 0;
-          char binary_string[33];
-
-          for (int i = 23; i >=20; i--) {
-            len += snprintf(binary_string + len,
-                sizeof(binary_string) - len, "%8.8b", buffer[i]);
-
-            int raw_click = (int) strtol(binary_string, NULL, 2);
-
-            // If raw_click is 0 it will be depress if its 1
-            // it will be press down
-            emit(fd, EV_KEY, BTN_LEFT, raw_click);
-          }
-        } else {
-          // No reason to do more calculations.
-          continue;
-        }
-
-
-        double scale_factor_x = ((double) MAX_ABS_X) / TOUCHPAD_WIDTH_MM;
-        double scale_factor_y = ((double) MAX_ABS_Y) / TOUCHPAD_HEIGHT_MM;
-
-        int scaled_width = (int) (scale_factor_x * ADJUSTED_WIDTH_MM);
-        int scaled_height = (int) (scale_factor_y * ADJUSTED_HEIGHT_MM);
-
-        int uncentered_pos_x = raw_x * RES_WIDTH / scaled_width;
-        int uncentered_pos_y = raw_y * RES_HEIGHT / scaled_height;
-
-        int leftover_width = MAX_ABS_X - scaled_width;
-        int leftover_height = MAX_ABS_Y - scaled_height;
-
-        // this works to center area
-        int pos_x = uncentered_pos_x - leftover_width / 2;
-        int pos_y = uncentered_pos_y - leftover_height / 2;
-
-        printf("(%d,%d)\n", pos_x, pos_y);
-
-        int rel_pos_x = pos_x - cur_pos_x;
-        int rel_pos_y = pos_y - cur_pos_y;
-
-        emit(fd, EV_REL, REL_X, rel_pos_x);
-        emit(fd, EV_REL, REL_Y, rel_pos_y);
-        emit(fd, EV_SYN, SYN_REPORT, 0);
-
-        // Disallow going over boundaries of the screen
-        // for current position calculation so we can get
-        // true pos.
-        if (pos_x < 0)
-          pos_x = 0;
-        if (pos_x > RES_WIDTH)
-          pos_x = RES_WIDTH;
-        if (pos_y < 0)
-          pos_y = 0;
-        if (pos_y > RES_HEIGHT)
-          pos_y = RES_HEIGHT;
-
-        // After movement this is true
-        cur_pos_x = pos_x;
-        cur_pos_y = pos_y;
-
-        prev_raw_x = raw_x;
-        prev_raw_y = raw_y;
-    }
-
-    puts("Cleaning up...");
-
-    free(touchpad_event_x);
-
-    /* give time for events to finish */
-    sleep(1);
-
-    ioctl(touchpad_fd, EVIOCREVOKE, 1);
-    close(touchpad_fd);
-
-    ioctl(fd, UI_DEV_DESTROY);
-
-    // Re-enable usual touchpad driver
-    // system("gsettings set org.gnome.desktop.peripherals.touchpad "
-    //    "send-events 'enabled'");
-
-
-    close(fd);
-    puts("Goodbye.");
+  close(fd);
+  puts("Goodbye.");
 }
