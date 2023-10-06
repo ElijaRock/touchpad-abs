@@ -66,7 +66,7 @@ int main(void) {
   }
 
   fseek(cmd, 0, SEEK_END);
-  // auto length doesn't work so hardcoding it
+  // below length doesn't work so hardcoding it
   // int length = ftell(cmd);
   int length = 3;
   fseek(cmd, 0, SEEK_SET);
@@ -130,7 +130,7 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
 
-  int touchpad_fd = open(touchpad_event_x, O_RDONLY | O_NONBLOCK);
+  int touchpad_fd = open(filename, O_RDONLY | O_NONBLOCK);
   // Disable touchpad to only use this program aka GRAB IT
   ioctl(touchpad_fd, EVIOCGRAB, 1);
 
