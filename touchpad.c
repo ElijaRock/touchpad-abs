@@ -117,7 +117,7 @@ int main(void) {
   FILE *ptr;
 
   char filename[50] = "/dev/input/event";
-  strncat(filename, touchpad_event_x, strnlen(touchpad_event_x, 2) - 1);
+  strncat(filename, touchpad_event_x, strnlen(touchpad_event_x, 2));
 
   // Open eventX file
   ptr = fopen(filename, "rb");
