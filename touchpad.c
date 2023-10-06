@@ -66,14 +66,16 @@ int main(void) {
   }
 
   fseek(cmd, 0, SEEK_END);
-  int length = ftell(cmd);
+  // auto length doesn't work so hardcoding it
+  // int length = ftell(cmd);
+  int length = 3;
   fseek(cmd, 0, SEEK_SET);
 
-  char *touchpad_event_x = malloc(sizeof(touchpad_event_x) * (length + 1));
+  char *touchpad_event_x = malloc(sizeof(*touchpad_event_x) * (length + 1));
 
   char c;
   int i = 0;
-  while ((c = fgetc(cmd)) != '\n') {
+  while (i < length && (c = fgetc(cmd)) != EOF && c != '\n') {
     touchpad_event_x[i] = c;
     i++;
   }
@@ -123,9 +125,9 @@ int main(void) {
   ptr = fopen(filename, "rb");
 
   if (ptr == NULL) {
-    exit(EXIT_FAILURE);
     perror("Couldn't open file. Need to be in \"input\""
            "user group most likely.\n");
+    exit(EXIT_FAILURE);
   }
 
   int touchpad_fd = open(touchpad_event_x, O_RDONLY | O_NONBLOCK);
